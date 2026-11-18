@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Latest Valuation Filter</title>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<style>
+  body{font-family:Segoe UI,Arial,sans-serif;background:#f4f6f9;margin:0;padding:30px;color:#222}
+  .card{max-width:1200px;margin:auto;background:#fff;border-radius:10px;padding:25px;box-shadow:0 2px 10px rgba(0,0,0,.08)}
+  h2{margin-top:0}
+  .drop{border:2px dashed #7a8bb5;border-radius:8px;padding:30px;text-align:center;cursor:pointer;background:#f9fbff}
+  .drop.over{background:#e8efff}
+  button{background:#1f6f43;color:#fff;border:none;padding:10px 20px;border-radius:6px;font-size:15px;cursor:pointer;margin-top:15px}
+  button:disabled{background:#999;cursor:not-allowed}
+  .stats{margin:15px 0;font-size:14px}
+  .stats span{display:inline-block;margin-right:20px;background:#eef2f7;padding:6px 12px;border-radius:5px}
+  .err{color:#b00020;margin-top:10px}
+  .tbl{max-height:450px;overflow:auto;margin-top:10px;border:1px solid #ddd}
+  table{border-collapse:collapse;width:100%;font-size:13px}
+  th,td{border:1px solid #e1e1e1;padding:5px 8px;white-space:nowrap;text-align:left}
+  th{background:#2f4f7f;color:#fff;position:sticky;top:0}
+  tr:nth-child(even) td{background:#fafafa}
+</style>
+</head>
+<body>
+<div class="card">
+  <h2>Latest Valuation per Investor (AMC Client Code)</h2>
+  <div class="drop" id="drop">Click or drag &amp; drop your Excel file here (.xlsx / .xls / .csv)
+    <input type="file" id="file" accept=".xlsx,.xls,.csv" hidden>
+  </div>
+  <div class="err" id="err"></div>
+  <div class="stats" id="stats"></div>
+  <button id="exportBtn" disabled>Export Latest Valuations to Excel</button>
+  <div class="tbl" id="preview"></div>
+</div>
+
+<script>
+let srcWs = null, keepRows = [], headerRow = 0, range = null, fileName = "";
+
+const drop = document.getElementById('drop'), fileIn = document.getElementById('file');
+drop.onclick = () => fileIn.click();
+drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
+drop.ondragleave = () => drop.classList.remove('over');
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); if (e.dataTransfer.files[0]) handle(e.dataTransfer.files[0]); };
+fileIn.onchange = e => { if (e.target.files[0]) handle(e.target.files[0]); };
+
+const norm = s => String(s ?? '').toLowerCase().replace(/[^a-z]/g, '');
+
+function toTime(cell) {
+  if (!cell || cell.v === undefined || cell.v === null || cell.v === '') return NaN;
+  const v = cell.v;
+  if (v instanceof Date) return v.getTime();
+  if (typeof v === 'number') return Math.round((v - 25569) * 86400000); // Excel serial
+  const s = String(v).trim();
+  let m;
+  if ((m = s.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/))) return Date.UTC(+m[1], m[2]-1, +m[3]);   // yyyy-mm-dd
+  if ((m = s.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})/))) return Date.UTC(+m[3], m[2]-1, +m[1]);   // dd-mm-yyyy
+  const t = Date.parse(s);  // e.g. 17-Nov-2026
+  return isNaN(t) ? NaN : t;
+}
+
+function handle(file) {
+  document.getElementById('err').textContent = '';
+  fileName = file.name.replace(/\.[^.]+$/, '');
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const wb = XLSX.read(e.target.result, { type: 'array', cellNF: true, cellText: true });
+      srcWs = wb.Sheets[wb.SheetNames[0]];
+      range = XLSX.utils.decode_range(srcWs['!ref']);
+
+      // find header row & columns
+      let codeCol = -1, dateCol = -1;
+      for (let r = range.s.r; r <= Math.min(range.e.r, range.s.r + 10) && codeCol < 0; r++) {
+        for (let c = range.s.c; c <= range.e.c; c++) {
+          const cell = srcWs[XLSX.utils.encode_cell({ r, c })];
+          const h = norm(cell && cell.v);
+          if (h === 'amcclientcode') codeCol = c;
+          if (h === 'valuationdate' || h === 'vaulationdate') dateCol = c;
+        }
+        if (codeCol >= 0 && dateCol >= 0) headerRow = r; else { codeCol = -1; dateCol = -1; }
+      }
+      if (codeCol < 0 || dateCol < 0) throw new Error('Could not find "AMC Client Code" and "Valuation Date" columns.');
+
+      // pick latest row per AMC Client Code (first occurrence wins on ties)
+      const best = new Map(); let total = 0, bad = 0;
+      for (let r = headerRow + 1; r <= range.e.r; r++) {
+        const codeCell = srcWs[XLSX.utils.encode_cell({ r, c: codeCol })];
+        const code = String(codeCell ? codeCell.v : '').trim().toUpperCase();
+        if (!code) continue;
+        total++;
+        const t = toTime(srcWs[XLSX.utils.encode_cell({ r, c: dateCol })]);
+        if (isNaN(t)) { bad++; }
+        const cur = best.get(code);
+        if (!cur || (!isNaN(t) && (isNaN(cur.t) || t > cur.t))) best.set(code, { r, t });
+      }
+      keepRows = [...best.values()].map(x => x.r).sort((a, b) => a - b);
+
+      document.getElementById('stats').innerHTML =
+        `<span>Total rows: <b>${total}</b></span><span>Unique investors: <b>${keepRows.length}</b></span>` +
+        `<span>Rows removed: <b>${total - keepRows.length}</b></span>` +
+        (bad ? `<span style="background:#fde8e8">Rows with unreadable date: <b>${bad}</b></span>` : '');
+      renderPreview();
+      document.getElementById('exportBtn').disabled = false;
+    } catch (ex) {
+      document.getElementById('err').textContent = ex.message;
+      document.getElementById('exportBtn').disabled = true;
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+const disp = cell => cell ? (cell.w !== undefined ? cell.w : String(cell.v ?? '')) : '';
+const esc = s => s.replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+
+function renderPreview() {
+  let h = '<table><tr>';
+  for (let c = range.s.c; c <= range.e.c; c++) h += `<th>${esc(disp(srcWs[XLSX.utils.encode_cell({ r: headerRow, c })]))}</th>`;
+  h += '</tr>';
+  for (const r of keepRows) {
+    h += '<tr>';
+    for (let c = range.s.c; c <= range.e.c; c++) h += `<td>${esc(disp(srcWs[XLSX.utils.encode_cell({ r, c })]))}</td>`;
+    h += '</tr>';
+  }
+  document.getElementById('preview').innerHTML = h + '</table>';
+}
+
+document.getElementById('exportBtn').onclick = () => {
+  // copy original cells as-is (same headers, values, text/number types and formats)
+  const out = {}; const rows = [headerRow, ...keepRows];
+  rows.forEach((srcR, i) => {
+    for (let c = range.s.c; c <= range.e.c; c++) {
+      const cell = srcWs[XLSX.utils.encode_cell({ r: srcR, c })];
+      if (cell) out[XLSX.utils.encode_cell({ r: i, c: c - range.s.c })] = { ...cell };
+    }
+  });
+  out['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: rows.length - 1, c: range.e.c - range.s.c } });
+  if (srcWs['!cols']) out['!cols'] = srcWs['!cols'];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, out, 'Latest Valuation');
+  XLSX.writeFile(wb, `${fileName}_Latest_Valuation.xlsx`);
+};
+</script>
+</body>
+</html>
