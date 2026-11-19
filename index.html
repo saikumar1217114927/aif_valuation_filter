@@ -2,143 +2,319 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Latest Valuation Filter</title>
+<title>Latest Valuation & Missing Investors</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   body{font-family:Segoe UI,Arial,sans-serif;background:#f4f6f9;margin:0;padding:30px;color:#222}
-  .card{max-width:1200px;margin:auto;background:#fff;border-radius:10px;padding:25px;box-shadow:0 2px 10px rgba(0,0,0,.08)}
-  h2{margin-top:0}
-  .drop{border:2px dashed #7a8bb5;border-radius:8px;padding:30px;text-align:center;cursor:pointer;background:#f9fbff}
-  .drop.over{background:#e8efff}
-  button{background:#1f6f43;color:#fff;border:none;padding:10px 20px;border-radius:6px;font-size:15px;cursor:pointer;margin-top:15px}
-  button:disabled{background:#999;cursor:not-allowed}
-  .stats{margin:15px 0;font-size:14px}
-  .stats span{display:inline-block;margin-right:20px;background:#eef2f7;padding:6px 12px;border-radius:5px}
-  .err{color:#b00020;margin-top:10px}
-  .tbl{max-height:450px;overflow:auto;margin-top:10px;border:1px solid #ddd}
+  .card{max-width:1250px;margin:0 auto 20px;background:#fff;border-radius:10px;padding:22px 25px;box-shadow:0 2px 10px rgba(0,0,0,.08)}
+  h2{margin:0 0 5px} h3{margin:0 0 12px}
+  .sub{color:#666;font-size:13px;margin-bottom:15px}
+  .row{display:flex;gap:20px;flex-wrap:wrap}
+  .drop{flex:1;min-width:280px;border:2px dashed #7a8bb5;border-radius:8px;padding:22px;text-align:center;cursor:pointer;background:#f9fbff}
+  .drop.over{background:#e8efff} .drop.ok{border-color:#1f6f43;background:#f0faf4}
+  .drop b{display:block;margin-bottom:4px} .drop small{color:#555}
+  .opts{margin-top:15px;font-size:14px} .opts label{margin-right:25px} .opts input{padding:4px 6px}
+  button{background:#1f6f43;color:#fff;border:none;padding:9px 18px;border-radius:6px;font-size:14px;cursor:pointer;margin:10px 10px 0 0}
+  button.blue{background:#2f4f7f}
+  button:disabled{background:#aaa;cursor:not-allowed}
+  .stats{margin:12px 0 4px;font-size:14px}
+  .stats span{display:inline-block;margin:0 10px 6px 0;background:#eef2f7;padding:6px 12px;border-radius:5px}
+  .stats span.red{background:#fde8e8} .stats span.amber{background:#fff4dc}
+  .err{color:#b00020;margin-top:10px;font-size:14px}
+  .tabs{margin-top:12px} .tabs button{background:#e4e9f0;color:#222} .tabs button.on{background:#2f4f7f;color:#fff}
+  .tbl{max-height:460px;overflow:auto;margin-top:10px;border:1px solid #ddd}
   table{border-collapse:collapse;width:100%;font-size:13px}
   th,td{border:1px solid #e1e1e1;padding:5px 8px;white-space:nowrap;text-align:left}
   th{background:#2f4f7f;color:#fff;position:sticky;top:0}
   tr:nth-child(even) td{background:#fafafa}
+  td.miss{color:#b00020;font-weight:600} td.okc{color:#1f6f43;font-weight:600}
+  .note{font-size:12px;color:#666;margin-top:8px}
 </style>
 </head>
 <body>
+
 <div class="card">
-  <h2>Latest Valuation per Investor (AMC Client Code)</h2>
-  <div class="drop" id="drop">Click or drag &amp; drop your Excel file here (.xlsx / .xls / .csv)
-    <input type="file" id="file" accept=".xlsx,.xls,.csv" hidden>
+  <h2>Latest Valuation &amp; Missing Investor Check</h2>
+  <div class="sub">Step 1: upload the valuation Excel. Step 2 (optional): upload the AMC period file to find investors whose valuation is not yet up to date.</div>
+  <div class="row">
+    <div class="drop" id="drop1"><b>1. Valuation Excel</b><small id="name1">Click or drag &amp; drop (.xlsx / .xls / .csv)</small>
+      <input type="file" id="file1" accept=".xlsx,.xls,.csv" hidden></div>
+    <div class="drop" id="drop2"><b>2. AMC Period file (AIF AMC'S + PERIODS)</b><small id="name2">Click or drag &amp; drop (.xlsx / .xls / .csv)</small>
+      <input type="file" id="file2" accept=".xlsx,.xls,.csv" hidden></div>
+  </div>
+  <div class="opts">
+    <label>Check as on date: <input type="date" id="asOn"></label>
+    <label>Data received by day of month: <input type="number" id="cutoff" value="15" min="1" max="28" style="width:55px"></label>
   </div>
   <div class="err" id="err"></div>
-  <div class="stats" id="stats"></div>
-  <button id="exportBtn" disabled>Export Latest Valuations to Excel</button>
+</div>
+
+<div class="card">
+  <h3>Latest valuation per investor</h3>
+  <div class="stats" id="stats1">Upload the valuation Excel to begin.</div>
+  <button id="exportLatest" disabled>Export Latest Valuations</button>
+  <button id="exportMissing" class="blue" disabled>Export Missing Investors</button>
+  <div class="stats" id="stats2"></div>
+  <div class="tabs">
+    <button id="tabLatest" class="on">Latest valuations</button>
+    <button id="tabMissing">Missing investors</button>
+    <button id="tabSummary">AMC summary</button>
+  </div>
   <div class="tbl" id="preview"></div>
+  <div class="note">Rule: data arrives between the 10th and the cut-off day of the following month. Monthly AMCs must have the last completed month; Quarterly the last Mar/Jun/Sep/Dec; Half yearly the last Mar/Sep. "Portal", "ND" or blank periods are not checked.</div>
 </div>
 
 <script>
-let srcWs = null, keepRows = [], headerRow = 0, range = null, fileName = "";
+const $ = id => document.getElementById(id);
+const enc = (r, c) => XLSX.utils.encode_cell({ r, c });
+const norm = s => String(s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
-const drop = document.getElementById('drop'), fileIn = document.getElementById('file');
-drop.onclick = () => fileIn.click();
-drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
-drop.ondragleave = () => drop.classList.remove('over');
-drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); if (e.dataTransfer.files[0]) handle(e.dataTransfer.files[0]); };
-fileIn.onchange = e => { if (e.target.files[0]) handle(e.target.files[0]); };
+let V = null;        // valuation: {ws, range, headerRow, codeCol, dateCol, amcCol, latest:[{r,t,code}], fileName}
+let amcMaster = null;// [{key, name, periodRaw, period}]
+let result = null;   // {missing:[], summary:[]}
+let tab = 'latest';
 
-const norm = s => String(s ?? '').toLowerCase().replace(/[^a-z]/g, '');
+// default as-on date = today
+(() => { const d = new Date(); $('asOn').value = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })();
+
+function setupDrop(dropId, inputId, handler) {
+  const drop = $(dropId), inp = $(inputId);
+  drop.onclick = () => inp.click();
+  drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
+  drop.ondragleave = () => drop.classList.remove('over');
+  drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); if (e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0], handler); };
+  inp.onchange = e => { if (e.target.files[0]) readFile(e.target.files[0], handler); inp.value = ''; };
+}
+function readFile(file, handler) {
+  $('err').textContent = '';
+  const fr = new FileReader();
+  fr.onload = e => {
+    try { handler(XLSX.read(e.target.result, { type: 'array', cellNF: true, cellText: true }), file.name); }
+    catch (ex) { $('err').textContent = ex.message; }
+  };
+  fr.readAsArrayBuffer(file);
+}
+setupDrop('drop1', 'file1', loadValuation);
+setupDrop('drop2', 'file2', loadMaster);
+$('asOn').onchange = $('cutoff').onchange = () => { compute(); render(); };
 
 function toTime(cell) {
   if (!cell || cell.v === undefined || cell.v === null || cell.v === '') return NaN;
   const v = cell.v;
   if (v instanceof Date) return v.getTime();
-  if (typeof v === 'number') return Math.round((v - 25569) * 86400000); // Excel serial
-  const s = String(v).trim();
-  let m;
-  if ((m = s.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/))) return Date.UTC(+m[1], m[2]-1, +m[3]);   // yyyy-mm-dd
-  if ((m = s.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})/))) return Date.UTC(+m[3], m[2]-1, +m[1]);   // dd-mm-yyyy
-  const t = Date.parse(s);  // e.g. 17-Nov-2026
-  return isNaN(t) ? NaN : t;
+  if (typeof v === 'number') return Math.round((v - 25569) * 86400000);
+  const s = String(v).trim(); let m;
+  if ((m = s.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/))) return Date.UTC(+m[1], m[2]-1, +m[3]);
+  if ((m = s.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})/))) return Date.UTC(+m[3], m[2]-1, +m[1]);
+  const t = Date.parse(s); return isNaN(t) ? NaN : t;
 }
+const monthIdx = t => { const d = new Date(t); return d.getUTCFullYear() * 12 + d.getUTCMonth(); };
+const monthEndLabel = idx => { const y = Math.floor(idx / 12), m = idx % 12; const last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate(); return `${String(last).padStart(2,'0')}-${MON[m]}-${y}`; };
+const fmtDate = t => isNaN(t) ? '' : (d => `${String(d.getUTCDate()).padStart(2,'0')}-${MON[d.getUTCMonth()]}-${d.getUTCFullYear()}`)(new Date(t));
 
-function handle(file) {
-  document.getElementById('err').textContent = '';
-  fileName = file.name.replace(/\.[^.]+$/, '');
-  const reader = new FileReader();
-  reader.onload = e => {
-    try {
-      const wb = XLSX.read(e.target.result, { type: 'array', cellNF: true, cellText: true });
-      srcWs = wb.Sheets[wb.SheetNames[0]];
-      range = XLSX.utils.decode_range(srcWs['!ref']);
-
-      // find header row & columns
-      let codeCol = -1, dateCol = -1;
-      for (let r = range.s.r; r <= Math.min(range.e.r, range.s.r + 10) && codeCol < 0; r++) {
-        for (let c = range.s.c; c <= range.e.c; c++) {
-          const cell = srcWs[XLSX.utils.encode_cell({ r, c })];
-          const h = norm(cell && cell.v);
-          if (h === 'amcclientcode') codeCol = c;
-          if (h === 'valuationdate' || h === 'vaulationdate') dateCol = c;
-        }
-        if (codeCol >= 0 && dateCol >= 0) headerRow = r; else { codeCol = -1; dateCol = -1; }
-      }
-      if (codeCol < 0 || dateCol < 0) throw new Error('Could not find "AMC Client Code" and "Valuation Date" columns.');
-
-      // pick latest row per AMC Client Code (first occurrence wins on ties)
-      const best = new Map(); let total = 0, bad = 0;
-      for (let r = headerRow + 1; r <= range.e.r; r++) {
-        const codeCell = srcWs[XLSX.utils.encode_cell({ r, c: codeCol })];
-        const code = String(codeCell ? codeCell.v : '').trim().toUpperCase();
-        if (!code) continue;
-        total++;
-        const t = toTime(srcWs[XLSX.utils.encode_cell({ r, c: dateCol })]);
-        if (isNaN(t)) { bad++; }
-        const cur = best.get(code);
-        if (!cur || (!isNaN(t) && (isNaN(cur.t) || t > cur.t))) best.set(code, { r, t });
-      }
-      keepRows = [...best.values()].map(x => x.r).sort((a, b) => a - b);
-
-      document.getElementById('stats').innerHTML =
-        `<span>Total rows: <b>${total}</b></span><span>Unique investors: <b>${keepRows.length}</b></span>` +
-        `<span>Rows removed: <b>${total - keepRows.length}</b></span>` +
-        (bad ? `<span style="background:#fde8e8">Rows with unreadable date: <b>${bad}</b></span>` : '');
-      renderPreview();
-      document.getElementById('exportBtn').disabled = false;
-    } catch (ex) {
-      document.getElementById('err').textContent = ex.message;
-      document.getElementById('exportBtn').disabled = true;
+/* ---------- 1. Valuation file ---------- */
+function loadValuation(wb, name) {
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const range = XLSX.utils.decode_range(ws['!ref']);
+  let headerRow = -1, codeCol = -1, dateCol = -1, amcCol = -1;
+  for (let r = range.s.r; r <= Math.min(range.e.r, range.s.r + 10) && headerRow < 0; r++) {
+    let cc = -1, dc = -1, ac = -1;
+    for (let c = range.s.c; c <= range.e.c; c++) {
+      const h = norm(ws[enc(r, c)] && ws[enc(r, c)].v);
+      if (h === 'amcclientcode') cc = c;
+      if (h === 'valuationdate' || h === 'vaulationdate') dc = c;
+      if (h === 'amcname') ac = c;
     }
-  };
-  reader.readAsArrayBuffer(file);
+    if (cc >= 0 && dc >= 0) { headerRow = r; codeCol = cc; dateCol = dc; amcCol = ac; }
+  }
+  if (headerRow < 0) throw new Error('Valuation file: could not find "AMC Client Code" and "Valuation Date" columns.');
+
+  const best = new Map(); let total = 0, bad = 0;
+  for (let r = headerRow + 1; r <= range.e.r; r++) {
+    const cc = ws[enc(r, codeCol)];
+    const code = String(cc ? cc.v : '').trim().toUpperCase();
+    if (!code) continue;
+    total++;
+    const t = toTime(ws[enc(r, dateCol)]);
+    if (isNaN(t)) bad++;
+    const cur = best.get(code);
+    if (!cur || (!isNaN(t) && (isNaN(cur.t) || t > cur.t))) best.set(code, { r, t, code });
+  }
+  const latest = [...best.values()].sort((a, b) => a.r - b.r);
+  V = { ws, range, headerRow, codeCol, dateCol, amcCol, latest, total, bad, fileName: name.replace(/\.[^.]+$/, '') };
+  $('name1').textContent = name; $('drop1').classList.add('ok');
+  if (amcCol < 0 && amcMaster) $('err').textContent = 'Valuation file has no "AMC Name" column, so the missing check cannot match AMCs.';
+  compute(); render();
 }
 
-const disp = cell => cell ? (cell.w !== undefined ? cell.w : String(cell.v ?? '')) : '';
-const esc = s => s.replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+/* ---------- 2. AMC period master ---------- */
+function normPeriod(p) {
+  const s = norm(p);
+  if (s.includes('month')) return 'Monthly';
+  if (s.includes('quar') || s.includes('qtr')) return 'Quarterly';
+  if (s.includes('half') || s.includes('semi')) return 'Half yearly';
+  return null; // Portal, ND, blank -> not checked
+}
+function loadMaster(wb, name) {
+  const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '', raw: false });
+  let hr = -1, ac = -1, pc = -1, mc = -1;
+  for (let r = 0; r < Math.min(rows.length, 10) && hr < 0; r++) {
+    rows[r].forEach((v, c) => {
+      const h = norm(v);
+      if (h.includes('match') || h.includes('alias')) mc = c;
+      else if (h.includes('period')) pc = c;
+      else if (h.includes('amc') && ac < 0) ac = c;
+    });
+    if (ac >= 0 && pc >= 0) hr = r; else { ac = -1; pc = -1; mc = -1; }
+  }
+  if (hr < 0) throw new Error('AMC file: could not find the "AIF AMC\'S" and "PERIODS" columns.');
+  amcMaster = [];
+  for (let r = hr + 1; r < rows.length; r++) {
+    const nm = String(rows[r][ac] ?? '').trim();
+    if (!nm) continue;
+    const pr = String(rows[r][pc] ?? '').trim();
+    // match keys: full name, name without trailing "AMC", first word of multi-word names (e.g. "RevX _ Nuvama" -> revx),
+    // plus any names typed in the optional "MATCH NAMES" column (separated by , or ;)
+    const keys = new Set([norm(nm)]);
+    const noAmc = norm(nm).replace(/amc$/, ''); if (noAmc.length >= 3) keys.add(noAmc);
+    const words = nm.split(/[^A-Za-z0-9]+/).filter(Boolean); if (words.length > 1 && words[0].length >= 3) keys.add(norm(words[0]));
+    if (mc >= 0) String(rows[r][mc] ?? '').split(/[,;\n]/).map(norm).filter(Boolean).forEach(k => keys.add(k));
+    amcMaster.push({ key: norm(nm), keys: [...keys], name: nm, periodRaw: pr, period: normPeriod(pr) });
+  }
+  $('name2').textContent = `${name} (${amcMaster.length} AMCs)`; $('drop2').classList.add('ok');
+  if (V && V.amcCol < 0) $('err').textContent = 'Valuation file has no "AMC Name" column, so the missing check cannot match AMCs.';
+  compute(); render();
+}
 
-function renderPreview() {
+// "BUOYANT" matches "Buoyant Capital Private Limited"; the longest matching AMC key wins
+function matchAmc(amcName) {
+  const n = norm(amcName); let best = null, bestLen = 0;
+  for (const a of amcMaster) for (const k of a.keys) if (n.startsWith(k) && k.length > bestLen) { best = a; bestLen = k.length; }
+  if (!best) for (const a of amcMaster) for (const k of a.keys) if (k.length >= 4 && n.includes(k) && k.length > bestLen) { best = a; bestLen = k.length; }
+  return best;
+}
+
+// latest month-end whose data should have arrived by the as-on date
+function expectedMonth(period, asOnStr, cutoff) {
+  const [y, m, d] = asOnStr.split('-').map(Number);
+  let idx = y * 12 + (m - 1) - (d >= cutoff ? 1 : 2);
+  const allowed = period === 'Quarterly' ? [2, 5, 8, 11] : period === 'Half yearly' ? [2, 8] : null;
+  if (allowed) while (!allowed.includes(idx % 12)) idx--;
+  return idx;
+}
+
+/* ---------- compute missing ---------- */
+function compute() {
+  result = null;
+  if (!V || !amcMaster || V.amcCol < 0) return;
+  const asOn = $('asOn').value; const cutoff = +$('cutoff').value || 15;
+  if (!asOn) return;
+  const sum = new Map(); amcMaster.forEach(a => sum.set(a.key, { amc: a, total: 0, ok: 0, miss: 0, names: new Set() }));
+  const unmatched = new Map(); const missing = [];
+  for (const L of V.latest) {
+    const amcName = String((V.ws[enc(L.r, V.amcCol)] || {}).v ?? '').trim();
+    const a = matchAmc(amcName);
+    if (!a) { unmatched.set(amcName, (unmatched.get(amcName) || 0) + 1); continue; }
+    const s = sum.get(a.key); s.total++; s.names.add(amcName);
+    if (!a.period) continue;
+    const exp = expectedMonth(a.period, asOn, cutoff);
+    if (isNaN(L.t) || monthIdx(L.t) < exp) { s.miss++; missing.push({ ...L, amc: a, exp }); }
+    else s.ok++;
+  }
+  const summary = amcMaster.map(a => {
+    const s = sum.get(a.key);
+    const exp = a.period ? monthEndLabel(expectedMonth(a.period, asOn, cutoff)) : '';
+    const status = !a.period ? 'Not checked' : s.total === 0 ? 'No data in file' : s.miss ? 'Missing' : 'Up to date';
+    return { amc: a.name, periodRaw: a.periodRaw, exp, file: [...s.names].join(', '), total: s.total, ok: s.ok, miss: s.miss, status };
+  });
+  result = { missing, summary, unmatched };
+}
+
+/* ---------- render ---------- */
+const cellText = c => c ? (c.w !== undefined ? c.w : String(c.v ?? '')) : '';
+const esc = s => String(s).replace(/[&<>"]/g, ch => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[ch]));
+const extraHdr = ['AMC (Period file)', 'Period', 'Expected As On', 'Latest Available Date'];
+
+function render() {
+  if (V) {
+    $('stats1').innerHTML = `<span>Total rows: <b>${V.total}</b></span><span>Unique investors: <b>${V.latest.length}</b></span><span>Rows removed: <b>${V.total - V.latest.length}</b></span>` +
+      (V.bad ? `<span class="red">Rows with unreadable date: <b>${V.bad}</b></span>` : '');
+    $('exportLatest').disabled = false;
+  }
+  if (result) {
+    const nc = result.summary.filter(s => s.status === 'Not checked').length;
+    const nd = result.summary.filter(s => s.status === 'No data in file').length;
+    let h = `<span class="red">Missing investors: <b>${result.missing.length}</b></span>` +
+      `<span>AMCs with missing: <b>${result.summary.filter(s => s.miss).length}</b></span>` +
+      `<span class="amber">Checked AMCs with no data in file: <b>${nd}</b></span>` +
+      `<span>Not checked (Portal/ND): <b>${nc}</b></span>`;
+    if (result.unmatched.size) h += `<span class="red">AMC names not found in period file: <b>${[...result.unmatched.keys()].map(esc).join(', ')}</b></span>`;
+    $('stats2').innerHTML = h;
+    $('exportMissing').disabled = false;
+  } else {
+    $('stats2').innerHTML = V && !amcMaster ? 'Upload the AMC period file to check missing investors.' : '';
+    $('exportMissing').disabled = true;
+  }
+  ['latest', 'missing', 'summary'].forEach(t => $('tab' + t[0].toUpperCase() + t.slice(1)).classList.toggle('on', tab === t));
+  $('preview').innerHTML = tab === 'summary' ? summaryTable() : dataTable(tab === 'missing');
+}
+
+function dataTable(missing) {
+  if (!V) return '';
+  if (missing && !result) return '<p style="padding:10px">Upload both files to see missing investors.</p>';
+  const { ws, range, headerRow } = V;
   let h = '<table><tr>';
-  for (let c = range.s.c; c <= range.e.c; c++) h += `<th>${esc(disp(srcWs[XLSX.utils.encode_cell({ r: headerRow, c })]))}</th>`;
+  for (let c = range.s.c; c <= range.e.c; c++) h += `<th>${esc(cellText(ws[enc(headerRow, c)]))}</th>`;
+  if (missing) extraHdr.forEach(x => h += `<th>${x}</th>`);
   h += '</tr>';
-  for (const r of keepRows) {
+  for (const L of (missing ? result.missing : V.latest)) {
     h += '<tr>';
-    for (let c = range.s.c; c <= range.e.c; c++) h += `<td>${esc(disp(srcWs[XLSX.utils.encode_cell({ r, c })]))}</td>`;
+    for (let c = range.s.c; c <= range.e.c; c++) h += `<td>${esc(cellText(ws[enc(L.r, c)]))}</td>`;
+    if (missing) h += `<td>${esc(L.amc.name)}</td><td>${esc(L.amc.periodRaw)}</td><td class="okc">${monthEndLabel(L.exp)}</td><td class="miss">${fmtDate(L.t)}</td>`;
     h += '</tr>';
   }
-  document.getElementById('preview').innerHTML = h + '</table>';
+  return h + '</table>';
 }
+function summaryTable() {
+  if (!result) return '<p style="padding:10px">Upload both files to see the AMC summary.</p>';
+  let h = '<table><tr><th>AIF AMC</th><th>Period</th><th>Expected As On</th><th>AMC Name in valuation file</th><th>Investors</th><th>Up to date</th><th>Missing</th><th>Status</th></tr>';
+  for (const s of result.summary) {
+    const cls = s.status === 'Missing' ? 'miss' : s.status === 'Up to date' ? 'okc' : '';
+    h += `<tr><td>${esc(s.amc)}</td><td>${esc(s.periodRaw)}</td><td>${s.exp}</td><td>${esc(s.file)}</td><td>${s.total}</td><td>${s.ok}</td><td>${s.miss}</td><td class="${cls}">${s.status}</td></tr>`;
+  }
+  return h + '</table>';
+}
+$('tabLatest').onclick = () => { tab = 'latest'; render(); };
+$('tabMissing').onclick = () => { tab = 'missing'; render(); };
+$('tabSummary').onclick = () => { tab = 'summary'; render(); };
 
-document.getElementById('exportBtn').onclick = () => {
-  // copy original cells as-is (same headers, values, text/number types and formats)
-  const out = {}; const rows = [headerRow, ...keepRows];
-  rows.forEach((srcR, i) => {
-    for (let c = range.s.c; c <= range.e.c; c++) {
-      const cell = srcWs[XLSX.utils.encode_cell({ r: srcR, c })];
-      if (cell) out[XLSX.utils.encode_cell({ r: i, c: c - range.s.c })] = { ...cell };
+/* ---------- export ---------- */
+function copySheet(rows, extra) {
+  const { ws, range, headerRow } = V; const out = {}; const w = range.e.c - range.s.c + 1;
+  [headerRow, ...rows.map(x => x.r)].forEach((srcR, i) => {
+    for (let c = range.s.c; c <= range.e.c; c++) { const cell = ws[enc(srcR, c)]; if (cell) out[enc(i, c - range.s.c)] = { ...cell }; }
+    if (extra) {
+      const vals = i === 0 ? extraHdr : extra(rows[i - 1]);
+      vals.forEach((v, k) => out[enc(i, w + k)] = { t: 's', v: String(v) });
     }
   });
-  out['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: rows.length - 1, c: range.e.c - range.s.c } });
-  if (srcWs['!cols']) out['!cols'] = srcWs['!cols'];
+  out['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: rows.length, c: w - 1 + (extra ? extraHdr.length : 0) } });
+  if (ws['!cols']) out['!cols'] = ws['!cols'];
+  return out;
+}
+$('exportLatest').onclick = () => {
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, out, 'Latest Valuation');
-  XLSX.writeFile(wb, `${fileName}_Latest_Valuation.xlsx`);
+  XLSX.utils.book_append_sheet(wb, copySheet(V.latest), 'Latest Valuation');
+  XLSX.writeFile(wb, `${V.fileName}_Latest_Valuation.xlsx`);
+};
+$('exportMissing').onclick = () => {
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, copySheet(result.missing, L => [L.amc.name, L.amc.periodRaw, monthEndLabel(L.exp), fmtDate(L.t)]), 'Missing Investors');
+  const sm = [['AIF AMC', 'Period', 'Expected As On', 'AMC Name in valuation file', 'Investors', 'Up to date', 'Missing', 'Status'],
+    ...result.summary.map(s => [s.amc, s.periodRaw, s.exp, s.file, s.total, s.ok, s.miss, s.status])];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sm), 'AMC Summary');
+  XLSX.writeFile(wb, `Missing_Investors_as_on_${$('asOn').value}.xlsx`);
 };
 </script>
 </body>
